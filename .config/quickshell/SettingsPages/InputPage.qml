@@ -77,6 +77,9 @@ Item {
     property bool layoutsFromRules: false
     property string layoutQuery: ""
     property int activeLayout: 0
+    property bool ibusReady: false
+    property bool unikeyOn: false
+    property bool unikeyAdded: true
 
     property bool devicesKnown: false
     property var touchpadNames: []
@@ -348,6 +351,7 @@ Item {
         ]
         pLive.running = true
         pDevices.running = true
+        queryIbus()
     }
 
     Timer { id: refreshTimer; interval: 400; onTriggered: page.refresh() }
@@ -468,8 +472,21 @@ Item {
 
     function filteredLayouts() {
         const q = layoutQuery.trim().toLowerCase()
-        if (q === "") return layoutEntries
-        return layoutEntries.filter(e => e.search.indexOf(q) !== -1)
+        const unikeyEntry = {
+            layout: "unikey",
+            variant: "",
+            name: "Vietnamese (Unikey - IBus)",
+            code: "ibus:Unikey",
+            search: "vietnamese tiếng việt unikey vn ibus ime",
+            isIme: true,
+            indent: false
+        }
+        if (q === "") return [unikeyEntry].concat(layoutEntries)
+        const matches = layoutEntries.filter(e => e.search.indexOf(q) !== -1)
+        if (unikeyEntry.search.indexOf(q) !== -1 || unikeyEntry.name.toLowerCase().indexOf(q) !== -1) {
+            return [unikeyEntry].concat(matches)
+        }
+        return matches
     }
 
     function parseKbLayouts(layoutStr, variantStr) {
@@ -507,6 +524,77 @@ Item {
 
     Process { id: pSwitch }
 
+    // ---------- IBus / Unikey ----------
+
+    Process {
+        id: pIbusQuery
+        command: ["ibus", "engine"]
+        stdout: StdioCollector {
+            onStreamFinished: {
+                const name = text.trim()
+                page.ibusReady = name.length > 0 && !name.toLowerCase().includes("cannot")
+                page.unikeyOn = name === "Unikey"
+            }
+        }
+    }
+
+    Process {
+        id: pIbusSet
+        stderr: StdioCollector {
+            onStreamFinished: if (text.trim().length > 0) console.warn("[ibus] set engine error:", text.trim())
+        }
+        onExited: exitCode => {
+            if (exitCode !== 0) console.warn("[ibus] ibus engine exited with code", exitCode)
+            page.queryIbus()
+        }
+    }
+
+    function queryIbus() {
+        pIbusQuery.running = false
+        pIbusQuery.running = true
+    }
+
+    Timer {
+        id: ibusPollTimer
+        interval: 1000
+        running: true
+        repeat: true
+        onTriggered: if (!pIbusQuery.running && !pIbusSet.running) page.queryIbus()
+    }
+
+    FileView {
+        id: unikeyFile
+        path: page.stateDir + "/unikey.json"
+        blockLoading: true
+    }
+
+    function loadUnikeyState() {
+        try {
+            const saved = JSON.parse(unikeyFile.text())
+            if (saved && typeof saved.added === "boolean") unikeyAdded = saved.added
+        } catch (error) {}
+    }
+
+    function saveUnikeyState() {
+        try { unikeyFile.setText(JSON.stringify({ added: page.unikeyAdded })) } catch (error) {}
+    }
+
+    // Turning Unikey on (from the chip, the ADD list or the card) also adds its chip.
+    function setUnikey(on) {
+        if (pIbusSet.running) return
+        if (on && !unikeyAdded) { unikeyAdded = true; saveUnikeyState() }
+        unikeyOn = on
+        pIbusSet.command = ["ibus", "engine", on ? "Unikey" : "xkb:us::eng"]
+        pIbusSet.running = true
+    }
+
+    // The x on the chip: switch back to plain English input and drop the chip.
+    function removeUnikeyChip() {
+        unikeyAdded = false
+        saveUnikeyState()
+        setUnikey(false)
+    }
+
     function switchKbLayout(index) {
         activeLayout = index
         pSwitch.command = ["hyprctl", "switchxkblayout", "all", String(index)]
@@ -538,8 +626,7 @@ Item {
     }
 
     function cycleKbLayout() {
-        if (kbLayouts.length < 2) return
-        switchKbLayout((activeLayout + 1) % kbLayouts.length)
+        Quickshell.execDetached([Quickshell.env("HOME") + "/.config/hypr/scripts/cycle-layout.sh"])
     }
 
     // ---------- reset ----------
@@ -868,7 +955,7 @@ Item {
                 Rectangle {
                     id: keybindHint
                     anchors.verticalCenter: parent.verticalCenter
-                    visible: page.kbLayouts.length > 1
+                    visible: page.kbLayouts.length + (page.unikeyAdded || page.unikeyOn ? 1 : 0) > 1
                     width: hintText.implicitWidth + 16; height: 22; radius: Theme.radius
                     color: hintMouse.containsMouse ? Theme.alpha(Theme.accent, 0.08) : "#00000000"
                     border.width: 1
@@ -924,7 +1011,7 @@ Item {
                                     id: kbChip
                                     required property var modelData
                                     required property int index
-                                    property bool current: index === page.activeLayout
+                                    property bool current: index === page.activeLayout && !page.unikeyOn
                                     height: 28; radius: Theme.radius
                                     width: chipRow.implicitWidth + 16
                                     color: current ? Theme.alpha(Theme.accent, 0.10) : (chipMouse.containsMouse ? Theme.alpha(Theme.accent, 0.08) : "#00000000")
@@ -935,7 +1022,10 @@ Item {
                                         id: chipMouse
                                         anchors.fill: parent; hoverEnabled: true
                                         cursorShape: Qt.PointingHandCursor
-                                        onClicked: page.switchKbLayout(kbChip.index)
+                                        onClicked: {
+                                            if (page.unikeyOn) page.setUnikey(false)
+                                            page.switchKbLayout(kbChip.index)
+                                        }
                                     }
 
                                     Row {
@@ -964,6 +1054,52 @@ Item {
                                                 cursorShape: Qt.PointingHandCursor
                                                 onClicked: page.removeKbLayout(kbChip.index)
                                             }
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Unikey Chip alongside layout chips
+                            Rectangle {
+                                id: unikeyChip
+                                visible: page.unikeyAdded || page.unikeyOn
+                                height: 28; radius: Theme.radius
+                                width: unikeyChipRow.implicitWidth + 16
+                                color: page.unikeyOn ? Theme.alpha(Theme.accent, 0.10) : (unikeyChipMouse.containsMouse ? Theme.alpha(Theme.accent, 0.08) : "#00000000")
+                                border.width: 1
+                                border.color: page.unikeyOn || unikeyChipMouse.containsMouse ? Theme.accent : Theme.border
+
+                                MouseArea {
+                                    id: unikeyChipMouse
+                                    anchors.fill: parent; hoverEnabled: true
+                                    cursorShape: Qt.PointingHandCursor
+                                    onClicked: page.setUnikey(!page.unikeyOn)
+                                }
+
+                                Row {
+                                    id: unikeyChipRow
+                                    anchors.centerIn: parent
+                                    spacing: 6
+
+                                    Text {
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        text: "UNIKEY (VN)"
+                                        color: page.unikeyOn ? Theme.accent : Theme.text
+                                        font.family: Theme.fontFamily; font.pixelSize: Theme.textSizeBody; font.bold: true
+                                    }
+
+                                    Text {
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        text: "\u00d7"
+                                        color: unikeyXMouse.containsMouse ? Theme.accent : Theme.textDim
+                                        font.family: Theme.fontFamily; font.pixelSize: Theme.textSizeSection
+
+                                        MouseArea {
+                                            id: unikeyXMouse
+                                            anchors.fill: parent; anchors.margins: -4
+                                            hoverEnabled: true
+                                            cursorShape: Qt.PointingHandCursor
+                                            onClicked: page.removeUnikeyChip()
                                         }
                                     }
                                 }
@@ -1065,12 +1201,137 @@ Item {
                                         cursorShape: Qt.PointingHandCursor
                                         onClicked: {
                                             page.releaseSearchFocus()
-                                            page.addKbLayout(layoutRow.modelData)
+                                            if (layoutRow.modelData.isIme) {
+                                                page.setUnikey(true)
+                                            } else {
+                                                page.addKbLayout(layoutRow.modelData)
+                                            }
                                         }
                                     }
                                 }
                             }
                         }
+                    }
+                }
+            }
+
+            // ---------------- INPUT METHOD ----------------
+            Row {
+                spacing: 10
+
+                Text {
+                    text: "INPUT METHOD"; color: Theme.text
+                    font.family: Theme.fontFamily; font.pixelSize: Theme.textSizeSection; font.bold: true; font.letterSpacing: 2
+                }
+
+                Text {
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: page.ibusReady ? "IBUS" : "IBUS NOT RUNNING"
+                    color: page.ibusReady ? Theme.textDim : Theme.danger
+                    font.family: Theme.fontFamily; font.pixelSize: Theme.textSizeBody
+                }
+            }
+
+            Rectangle {
+                width: parent.width
+                height: imColumn.implicitHeight + 20
+                radius: Theme.radius
+                color: "#00000000"; border.width: 1; border.color: Theme.border
+
+                Column {
+                    id: imColumn
+                    anchors.left: parent.left; anchors.right: parent.right
+                    anchors.top: parent.top
+                    anchors.margins: 10
+                    spacing: 8
+
+                    Row {
+                        height: 28; spacing: 8
+
+                        Text {
+                            width: page.labelWidth; height: 28
+                            verticalAlignment: Text.AlignVCenter
+                            text: "VIETNAMESE (UNIKEY)"; color: Theme.text
+                            font.family: Theme.fontFamily; font.pixelSize: Theme.textSizeBody
+                        }
+
+                        Rectangle {
+                            width: 64; height: 28; radius: Theme.radius
+                            opacity: page.ibusReady ? 1 : 0.4
+                            color: page.unikeyOn ? Theme.alpha(Theme.accent, 0.10) : (unikeyMouse.containsMouse ? Theme.alpha(Theme.accent, 0.08) : "#00000000")
+                            border.width: 1
+                            border.color: page.unikeyOn || unikeyMouse.containsMouse ? Theme.accent : Theme.border
+
+                            Text {
+                                anchors.centerIn: parent
+                                text: page.unikeyOn ? "ON" : "OFF"
+                                color: page.unikeyOn ? Theme.accent : Theme.text
+                                font.family: Theme.fontFamily; font.pixelSize: Theme.textSizeBody; font.bold: true; font.letterSpacing: 1
+                            }
+
+                            MouseArea {
+                                id: unikeyMouse
+                                anchors.fill: parent; hoverEnabled: true
+                                enabled: page.ibusReady
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: page.setUnikey(!page.unikeyOn)
+                            }
+                        }
+
+                        Rectangle {
+                            width: 80; height: 28; radius: Theme.radius
+                            opacity: page.ibusReady ? 1 : 0.4
+                            color: confMouse.containsMouse ? Theme.alpha(Theme.accent, 0.08) : "#00000000"
+                            border.width: 1
+                            border.color: confMouse.containsMouse ? Theme.accent : Theme.border
+
+                            Text {
+                                anchors.centerIn: parent
+                                text: "CONFIG"
+                                color: Theme.text
+                                font.family: Theme.fontFamily; font.pixelSize: Theme.textSizeBody; font.bold: true; font.letterSpacing: 1
+                            }
+
+                            MouseArea {
+                                id: confMouse
+                                anchors.fill: parent; hoverEnabled: true
+                                enabled: page.ibusReady
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: Quickshell.execDetached(["/usr/lib/ibus/ibus-setup-unikey"])
+                            }
+                        }
+
+                        Rectangle {
+                            visible: !page.ibusReady
+                            width: 80; height: 28; radius: Theme.radius
+                            color: startIbusMouse.containsMouse ? Theme.alpha(Theme.accent, 0.08) : "#00000000"
+                            border.width: 1
+                            border.color: startIbusMouse.containsMouse ? Theme.accent : Theme.border
+
+                            Text {
+                                anchors.centerIn: parent
+                                text: "START"
+                                color: Theme.accent
+                                font.family: Theme.fontFamily; font.pixelSize: Theme.textSizeBody; font.bold: true; font.letterSpacing: 1
+                            }
+
+                            MouseArea {
+                                id: startIbusMouse
+                                anchors.fill: parent; hoverEnabled: true
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: {
+                                    Quickshell.execDetached(["ibus-daemon", "-drx"])
+                                    refreshTimer.restart()
+                                }
+                            }
+                        }
+                    }
+
+                    Text {
+                        text: "Shortcut: Ctrl+Shift. Configure allows switching between Telex, VNI, VIQR."
+                        color: Theme.textDim
+                        font.family: Theme.fontFamily
+                        font.pixelSize: Theme.textSizeSmall
                     }
                 }
             }
@@ -1142,6 +1403,8 @@ Item {
         stateDirProcess.running = true
         loadState()
         pLayouts.running = true
+        loadUnikeyState()
+        page.queryIbus()
         refresh()
     }
 }

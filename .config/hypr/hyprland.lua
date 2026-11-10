@@ -24,6 +24,7 @@ end
 ---- AUTOSTART ----
 
 hl.on("hyprland.start", function()
+    hl.exec_cmd("ibus-daemon -drx")
     -- hl.exec_cmd("dunst") replaced with quickshell
     hl.exec_cmd("systemctl --user start hyprpolkitagent")
     hl.exec_cmd("nm-applet")
@@ -39,6 +40,10 @@ end)
 hl.env("XCURSOR_SIZE", "14")
 hl.env("QT_QPA_PLATFORM", "wayland")
 hl.env("MOZ_ENABLE_WAYLAND", "1")
+hl.env("GTK_IM_MODULE", "ibus")
+hl.env("QT_IM_MODULE", "ibus")
+hl.env("XMODIFIERS", "@im=ibus")
+hl.env("GLFW_IM_MODULE", "ibus")
 
 ---- INPUT ----
 

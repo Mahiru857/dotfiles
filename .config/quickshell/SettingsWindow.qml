@@ -80,7 +80,7 @@ Scope {
         { name: "Appearance", icon: "󰏘", page: "AppearancePage" },
         { name: "Themes", icon: "󰉼",  page: "ThemesPage" },
         { name: "Bar", icon: "\ue690",  page: "BarPage" },
-        { name: "Input", icon: "\udb83\udfb0", page: "InputPage" },
+        { name: "Input", icon: "\udb83\udfb0", page: "InputPage", keywords: "keyboard mouse touchpad unikey vietnamese ime layout ibus" },
         { name: "Network", icon: "󰖩", page: "NetworkPage" },
         { name: "Bluetooth", icon: "\uf293", page: "BluetoothPage" },
         { name: "Storage", icon: "\uf0a0", page: "StoragePage" },
@@ -95,9 +95,11 @@ Scope {
         var q = searchQuery.trim().toLowerCase()
         var out = []
         for (var i = 0; i < navItems.length; i++) {
-            if (q === "" || navItems[i].name.toLowerCase().indexOf(q) >= 0)
-                out.push({ name: navItems[i].name, icon: navItems[i].icon,
-                           page: navItems[i].page, origIndex: i })
+            var item = navItems[i]
+            var match = q === "" || item.name.toLowerCase().indexOf(q) >= 0 || (item.keywords && item.keywords.indexOf(q) >= 0)
+            if (match)
+                out.push({ name: item.name, icon: item.icon,
+                           page: item.page, origIndex: i })
         }
         return out
     }

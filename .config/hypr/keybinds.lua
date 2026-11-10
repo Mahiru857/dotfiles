@@ -202,7 +202,7 @@ do
     end
 end
 
-bind(mainMod .. " + " .. layout_key, hl.dsp.exec_cmd("hyprctl switchxkblayout current next"))
+bind(mainMod .. " + " .. layout_key, hl.dsp.exec_cmd(home .. "/.config/hypr/scripts/cycle-layout.sh"))
 
 bind(mainMod .. " + " .. float_key, function()
     hl.dispatch(hl.dsp.window.float({ action = "toggle" }))
